@@ -111,39 +111,63 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text('❌ Please provide time and message. Example: /remind 30m Buy groceries')
             return
 
-        time_str = args[0].lower()
-        message = ' '.join(args[1:])
+        time_str = ' '.join(args[:-1]).lower()  # Join all args except the last one for time
+        message = args[-1]  # Last argument is the message
         logger.info(f"User {update.effective_user.id} setting reminder: {time_str} - {message}")
         
-        # Parse time
-        if time_str.endswith('s'):
-            seconds = int(time_str[:-1])
-            reminder_time = datetime.now() + timedelta(seconds=seconds)
-        elif time_str.endswith('m'):
-            minutes = int(time_str[:-1])
-            reminder_time = datetime.now() + timedelta(minutes=minutes)
-        elif time_str.endswith('h'):
-            hours = int(time_str[:-1])
-            reminder_time = datetime.now() + timedelta(hours=hours)
-        elif time_str.endswith('d'):
-            days = int(time_str[:-1])
-            reminder_time = datetime.now() + timedelta(days=days)
-        elif time_str in DAYS_OF_WEEK:
-            target_day = DAYS_OF_WEEK[time_str]
-            reminder_time = get_next_day_of_week(target_day)
-            # Set time to 10:00 AM
-            reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
-        else:
-            logger.warning(f"User {update.effective_user.id} provided invalid time format: {time_str}")
-            await update.message.reply_text(
-                '❌ Invalid time format. Use:\n'
-                '- s for seconds (e.g., 30s)\n'
-                '- m for minutes (e.g., 30m)\n'
-                '- h for hours (e.g., 1h)\n'
-                '- d for days (e.g., 1d)\n'
-                '- Day of week (e.g., thu for Thursday)'
-            )
-            return
+        # Try to parse the time string using dateutil
+        try:
+            # First try to parse with explicit time
+            reminder_time = parser.parse(time_str, fuzzy=True)
+            logger.info(f"Successfully parsed time: {reminder_time}")
+            
+            # Check if the parsed time has a time component
+            if reminder_time.hour == 0 and reminder_time.minute == 0 and reminder_time.second == 0:
+                # No time component was provided, set to 10:00 AM
+                reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
+                logger.info(f"Set default time to 10:00 AM: {reminder_time}")
+        except Exception as e:
+            logger.error(f"Error parsing time: {str(e)}")
+            # If parsing fails, try to parse just the date and use 10:00 AM
+            try:
+                reminder_time = parser.parse(f"{time_str} 10:00 am", fuzzy=True)
+                logger.info(f"Successfully parsed time with default 10:00 AM: {reminder_time}")
+            except Exception as e:
+                logger.error(f"Error parsing time with default: {str(e)}")
+                # If still fails, try the old format (30m, 1h, etc.)
+                if time_str.endswith('s'):
+                    seconds = int(time_str[:-1])
+                    reminder_time = datetime.now() + timedelta(seconds=seconds)
+                elif time_str.endswith('m'):
+                    minutes = int(time_str[:-1])
+                    reminder_time = datetime.now() + timedelta(minutes=minutes)
+                elif time_str.endswith('h'):
+                    hours = int(time_str[:-1])
+                    reminder_time = datetime.now() + timedelta(hours=hours)
+                elif time_str.endswith('d'):
+                    days = int(time_str[:-1])
+                    reminder_time = datetime.now() + timedelta(days=days)
+                elif time_str in DAYS_OF_WEEK:
+                    target_day = DAYS_OF_WEEK[time_str]
+                    reminder_time = get_next_day_of_week(target_day)
+                    reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
+                else:
+                    logger.warning(f"User {update.effective_user.id} provided invalid time format: {time_str}")
+                    await update.message.reply_text(
+                        '❌ Invalid time format. Use:\n'
+                        '- Natural language (e.g., "10 may", "tomorrow 9 am")\n'
+                        '- s for seconds (e.g., 30s)\n'
+                        '- m for minutes (e.g., 30m)\n'
+                        '- h for hours (e.g., 1h)\n'
+                        '- d for days (e.g., 1d)\n'
+                        '- Day of week (e.g., thu for Thursday)'
+                    )
+                    return
+
+        # If the parsed time is in the past, assume it's for next year
+        if reminder_time < datetime.now():
+            reminder_time = reminder_time.replace(year=reminder_time.year + 1)
+            logger.info(f"Adjusted time to next year: {reminder_time}")
 
         # Generate reminder ID
         reminder_id = len(active_reminders) + 1
@@ -186,7 +210,12 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except ValueError as e:
         logger.error(f"Error setting reminder: {str(e)}")
-        await update.message.reply_text('Invalid time format. Please use numbers followed by s, m, h, or d, or a day of the week.')
+        await update.message.reply_text(
+            'Invalid time format. Please use:\n'
+            '- Natural language (e.g., "10 may", "tomorrow 9 am")\n'
+            '- Numbers followed by s, m, h, or d\n'
+            '- Day of the week'
+        )
 
 async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all active reminders."""
