@@ -431,6 +431,101 @@ async def handle_custom_time(update: Update, context: ContextTypes.DEFAULT_TYPE)
     logger.info("Cleared rescheduling_reminder_id from user_data")
     return ConversationHandler.END
 
+async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle messages in channels and set automatic reminders."""
+    logger.info(f"Received message in chat type: {update.effective_chat.type}")
+    
+    # Check for channel post
+    if update.channel_post:
+        message = update.channel_post
+    elif update.message:
+        message = update.message
+    else:
+        logger.info("No message or channel post found in update")
+        return
+
+    # Skip if message is a command
+    if message.text and message.text.startswith('/'):
+        logger.info("Skipping command message")
+        return
+
+    # Skip if message is from a private chat
+    if update.effective_chat.type == 'private':
+        logger.info("Skipping private chat message")
+        return
+
+    try:
+        # Get the message text or caption
+        message_text = None
+        if message.text:
+            message_text = message.text
+        elif message.caption:
+            message_text = message.caption
+        else:
+            # Handle different message types
+            if message.photo:
+                message_text = "Photo message"
+            elif message.video:
+                message_text = "Video message"
+            elif message.document:
+                message_text = f"Document: {message.document.file_name}"
+            elif message.audio:
+                message_text = "Audio message"
+            elif message.voice:
+                message_text = "Voice message"
+            else:
+                message_text = "Media message"
+        
+        logger.info(f"Processing message: {message_text}")
+        
+        # Calculate time for 2 days from now at 10 AM
+        now = datetime.now()
+        reminder_time = now + timedelta(days=2)
+        reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
+
+        # Generate reminder ID
+        reminder_id = len(active_reminders) + 1
+        
+        # Store reminder info
+        active_reminders[reminder_id] = {
+            'chat_id': update.effective_chat.id,
+            'message': message_text,
+            'time': reminder_time
+        }
+        logger.info(f"Auto-stored reminder {reminder_id} for time {reminder_time}")
+
+        # Schedule the reminder
+        context.application.job_queue.run_once(
+            send_reminder,
+            reminder_time - now,
+            data={'reminder_id': reminder_id}
+        )
+        logger.info(f"Auto-scheduled reminder {reminder_id} to run at {reminder_time}")
+
+        # Create keyboard with buttons
+        keyboard = [
+            [
+                InlineKeyboardButton("Cancel", callback_data=f"cancel:{reminder_id}"),
+                InlineKeyboardButton("Reschedule", callback_data=f"reschedule:{reminder_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # Format the date and time
+        formatted_date = reminder_time.strftime("%d %b %H:%M")
+        await message.reply_text(
+            f'⏰ Auto-reminder set!\n'
+            f'📅 {formatted_date}\n'
+            f'📝 Msg: {message_text}\n'
+            f'🆔 Reminder ID: {reminder_id}',
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+
+    except Exception as e:
+        logger.error(f"Error setting auto-reminder: {str(e)}")
+        logger.exception("Full traceback:")
+
 def main():
     """Start the bot."""
     # Create the Application
@@ -451,6 +546,13 @@ def main():
     application.add_handler(CommandHandler("remind", set_reminder))
     application.add_handler(CommandHandler("list", list_reminders))
     application.add_handler(CommandHandler("cancel", cancel_reminder))
+    
+    # Add message handler for channel messages - moved before conversation handler
+    application.add_handler(MessageHandler(
+        (filters.ChatType.CHANNEL | filters.ChatType.GROUP) & ~filters.COMMAND,
+        handle_channel_message,
+        block=False
+    ))
     
     # Add conversation handler for custom time input
     conv_handler = ConversationHandler(
