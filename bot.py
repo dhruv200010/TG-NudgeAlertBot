@@ -124,14 +124,36 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
             # Send reminder to each admin
             for admin_id in admin_ids:
                 try:
-                    await context.bot.send_message(
-                        chat_id=admin_id,
-                        text=f"⏰ REMINDER: {reminder['message']}",
-                        reply_markup=reply_markup
-                    )
-                    logger.info(f"Sent reminder {reminder_id} to admin {admin_id}")
+                    if reminder.get('photo_file_id'):
+                        logger.info(f"Sending photo reminder with file_id: {reminder['photo_file_id']}")
+                        # Send photo with caption
+                        await context.bot.send_photo(
+                            chat_id=admin_id,
+                            photo=reminder['photo_file_id'],
+                            caption=f"⏰ REMINDER: {reminder['message']}",
+                            reply_markup=reply_markup
+                        )
+                        logger.info(f"Successfully sent photo reminder to admin {admin_id}")
+                    else:
+                        # Send text message only
+                        await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=f"⏰ REMINDER: {reminder['message']}",
+                            reply_markup=reply_markup
+                        )
+                        logger.info(f"Successfully sent text reminder to admin {admin_id}")
                 except Exception as e:
                     logger.error(f"Error sending reminder to admin {admin_id}: {str(e)}")
+                    # Try to send text-only reminder if photo sending fails
+                    try:
+                        await context.bot.send_message(
+                            chat_id=admin_id,
+                            text=f"⏰ REMINDER: {reminder['message']}\n(Photo could not be sent)",
+                            reply_markup=reply_markup
+                        )
+                        logger.info(f"Sent text-only reminder to admin {admin_id} after photo failure")
+                    except Exception as e2:
+                        logger.error(f"Error sending text-only reminder to admin {admin_id}: {str(e2)}")
             
             # Don't delete the reminder here, let it be deleted only when cancelled
             logger.info(f"Reminder {reminder_id} sent to all admins")
@@ -334,9 +356,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == 'cancel':
             if reminder_id in active_reminders:
                 del active_reminders[reminder_id]
-                await query.edit_message_text(text=f"❌ Reminder {reminder_id} has been cancelled.")
+                # Send a new message instead of editing
+                await query.message.reply_text(text=f"❌ Reminder {reminder_id} has been cancelled.")
             else:
-                await query.edit_message_text(text="❌ Reminder not found.")
+                await query.message.reply_text(text="❌ Reminder not found.")
         
         elif action == 'reschedule':
             if reminder_id in active_reminders:
@@ -354,12 +377,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.edit_message_text(
+                # Send a new message instead of editing
+                await query.message.reply_text(
                     text="⏰ Choose when to reschedule the reminder:",
                     reply_markup=reply_markup
                 )
             else:
-                await query.edit_message_text(text="❌ Reminder not found.")
+                await query.message.reply_text(text="❌ Reminder not found.")
         
         elif action == 'reschedule_time':
             if len(data) == 3:
@@ -412,19 +436,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     # Format the date and time in the new format
                     formatted_date = new_time.strftime("%d %b %H:%M")
-                    await query.edit_message_text(
+                    # Send a new message instead of editing
+                    await query.message.reply_text(
                         text=f"✅ Reminder rescheduled!\n"
                              f"📅 {formatted_date}\n"
                              f"🆔 Reminder ID: {reminder_id}",
                         parse_mode='HTML'
                     )
                 else:
-                    await query.edit_message_text(text="❌ Reminder not found.")
+                    await query.message.reply_text(text="❌ Reminder not found.")
     
     except Exception as e:
         logger.error(f"Error in button callback: {str(e)}")
         try:
-            await query.edit_message_text("❌ An error occurred. Please try again.")
+            await query.message.reply_text("❌ An error occurred. Please try again.")
         except:
             pass
         return ConversationHandler.END
@@ -519,10 +544,14 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
 
     # Get the message text or caption
     message_text = None
+    photo_file_id = None
     
     # Debug logging for message type
     if message.photo:
         logger.info("Message contains photo")
+        # Get the highest quality photo
+        photo_file_id = message.photo[-1].file_id
+        logger.info(f"Photo file_id: {photo_file_id}")
         if message.caption:
             logger.info(f"Photo has caption: {message.caption}")
             message_text = message.caption
@@ -578,7 +607,6 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
             logger.info(f"Successfully parsed time: {reminder_time}")
             
             # Extract the actual reminder message by removing the time part
-            # This is a simple approach - you might want to make it more sophisticated
             time_patterns = [
                 r'\b(today|tomorrow|next week|next month)\b',
                 r'\b\d{1,2}:\d{2}\s*(?:am|pm)\b',
@@ -628,7 +656,8 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
         active_reminders[reminder_id] = {
             'chat_id': update.effective_chat.id,
             'message': reminder_message,
-            'time': reminder_time
+            'time': reminder_time,
+            'photo_file_id': photo_file_id  # Store the photo file_id if present
         }
         logger.info(f"Auto-stored reminder {reminder_id} for time {reminder_time}")
 
