@@ -680,7 +680,7 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
 
         # Format the date and time
         formatted_date = reminder_time.strftime("%d %b %H:%M")
-        await message.reply_text(
+        confirmation_message = await message.reply_text(
             f'⏰ Auto-reminder set!\n'
             f'📅 {formatted_date}\n'
             f'📝 Msg: {reminder_message}\n'
@@ -688,6 +688,18 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
+
+        # Schedule deletion of confirmation message after 30 seconds
+        async def delete_confirmation():
+            try:
+                await asyncio.sleep(30)  # Wait for 30 seconds
+                await confirmation_message.delete()
+                logger.info(f"Deleted confirmation message for reminder {reminder_id}")
+            except Exception as e:
+                logger.error(f"Error deleting confirmation message: {str(e)}")
+
+        # Start the deletion task
+        asyncio.create_task(delete_confirmation())
 
     except Exception as e:
         logger.error(f"Error setting auto-reminder: {str(e)}")
