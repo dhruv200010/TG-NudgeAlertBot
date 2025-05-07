@@ -42,18 +42,34 @@ DAYS_OF_WEEK = {
 # Add conversation states
 WAITING_FOR_CUSTOM_TIME = 1
 
+async def get_chat_admins(chat_id: int, bot) -> list:
+    """Get all administrators of a chat."""
+    try:
+        chat_members = await bot.get_chat_administrators(chat_id)
+        return [member.user.id for member in chat_members]
+    except Exception as e:
+        logger.error(f"Error getting chat admins: {str(e)}")
+        return []
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
     logger.info(f"User {update.effective_user.id} started the bot")
     await update.message.reply_text(
-        'Hi! I am a reminder bot. Use /remind <time> <message> to set a reminder.\n'
-        'Example: /remind 30m Buy groceries\n'
+        'Hi! I am a reminder bot. Use /remind <time> <message> to set a reminder.\n\n'
         'Time formats:\n'
-        '- 30s (seconds)\n'
-        '- 30m (minutes)\n'
-        '- 1h (hours)\n'
-        '- 1d (days)\n'
-        '- thu (Thursday)\n'
+        '- Natural language: "7 may 10:11 am", "tomorrow 9 am"\n'
+        '- Seconds: 30s (30 seconds)\n'
+        '- Minutes: 30m (30 minutes)\n'
+        '- Hours: 1h (1 hour)\n'
+        '- Days: 1d (1 day)\n'
+        '- Specific days: mon, tue, wed, thu, fri, sat, sun\n'
+        '  (or full names: monday, tuesday, etc.)\n\n'
+        'Examples:\n'
+        '/remind 30s Take a break\n'
+        '/remind 1h Check email\n'
+        '/remind 2d Call mom\n'
+        '/remind mon Team meeting\n'
+        '/remind 7 may 10:11 am Buy groceries\n'
         'You can also set reminders in channels/groups!'
     )
 
@@ -64,32 +80,61 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'Available commands:\n'
         '/start - Start the bot\n'
         '/help - Show this help message\n'
-        '/remind <time> <message> - Set a reminder\n'
+        '/remind <time> <message> - Set a reminder\n\n'
         'Time formats:\n'
-        '- 30s (seconds)\n'
-        '- 30m (minutes)\n'
-        '- 1h (hours)\n'
-        '- 1d (days)\n'
-        '- thu (Thursday)\n'
+        '- Natural language: "7 may 10:11 am", "tomorrow 9 am"\n'
+        '- Seconds: 30s (30 seconds)\n'
+        '- Minutes: 30m (30 minutes)\n'
+        '- Hours: 1h (1 hour)\n'
+        '- Days: 1d (1 day)\n'
+        '- Specific days: mon, tue, wed, thu, fri, sat, sun\n'
+        '  (or full names: monday, tuesday, etc.)\n\n'
+        'Examples:\n'
+        '/remind 30s Take a break\n'
+        '/remind 1h Check email\n'
+        '/remind 2d Call mom\n'
+        '/remind mon Team meeting\n'
+        '/remind 7 may 10:11 am Buy groceries\n\n'
         '/list - List all active reminders\n'
         '/cancel <reminder_id> - Cancel a reminder'
     )
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
-    """Send the reminder message."""
+    """Send the reminder message to all admins."""
     job = context.job
     reminder_id = job.data['reminder_id']
     
     if reminder_id in active_reminders:
         reminder = active_reminders[reminder_id]
         logger.info(f"Sending reminder {reminder_id}: {reminder['message']}")
+        
         try:
-            await context.bot.send_message(
-                chat_id=reminder['chat_id'],
-                text=f"⏰ REMINDER: {reminder['message']}"
-            )
-            del active_reminders[reminder_id]
-            logger.info(f"Reminder {reminder_id} sent and removed from active reminders")
+            # Get all admins of the chat
+            admin_ids = await get_chat_admins(reminder['chat_id'], context.bot)
+            
+            # Create keyboard with buttons
+            keyboard = [
+                [
+                    InlineKeyboardButton("Cancel", callback_data=f"cancel:{reminder_id}"),
+                    InlineKeyboardButton("Reschedule", callback_data=f"reschedule:{reminder_id}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Send reminder to each admin
+            for admin_id in admin_ids:
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=f"⏰ REMINDER: {reminder['message']}",
+                        reply_markup=reply_markup
+                    )
+                    logger.info(f"Sent reminder {reminder_id} to admin {admin_id}")
+                except Exception as e:
+                    logger.error(f"Error sending reminder to admin {admin_id}: {str(e)}")
+            
+            # Don't delete the reminder here, let it be deleted only when cancelled
+            logger.info(f"Reminder {reminder_id} sent to all admins")
         except Exception as e:
             logger.error(f"Error sending reminder {reminder_id}: {str(e)}")
 
@@ -108,11 +153,33 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         args = context.args
         if len(args) < 2:
             logger.warning(f"User {update.effective_user.id} provided insufficient arguments")
-            await update.message.reply_text('❌ Please provide time and message. Example: /remind 30m Buy groceries')
+            await update.message.reply_text('❌ Please provide time and message. Example: /remind 7 may 10:11 am Buy groceries')
             return
 
-        time_str = ' '.join(args[:-1]).lower()  # Join all args except the last one for time
-        message = args[-1]  # Last argument is the message
+        # Find where the time part ends by looking for AM/PM or time pattern
+        time_end_index = 0
+        for i, arg in enumerate(args):
+            if arg.lower() in ['am', 'pm']:
+                time_end_index = i + 1
+                break
+            elif ':' in arg:
+                # If we find a time pattern, check if next word is AM/PM
+                if i + 1 < len(args) and args[i + 1].lower() in ['am', 'pm']:
+                    time_end_index = i + 2
+                    break
+                else:
+                    time_end_index = i + 1
+                    break
+        
+        if time_end_index == 0:
+            # If no AM/PM or time pattern found, try to parse the first 3-4 words as time
+            time_end_index = min(4, len(args) - 1)
+        
+        # Join the time parts
+        time_str = ' '.join(args[:time_end_index]).lower()
+        # Join the remaining parts as message
+        message = ' '.join(args[time_end_index:])
+        
         logger.info(f"User {update.effective_user.id} setting reminder: {time_str} - {message}")
         
         # Try to parse the time string using dateutil
@@ -155,7 +222,7 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.warning(f"User {update.effective_user.id} provided invalid time format: {time_str}")
                     await update.message.reply_text(
                         '❌ Invalid time format. Use:\n'
-                        '- Natural language (e.g., "10 may", "tomorrow 9 am")\n'
+                        '- Natural language (e.g., "7 may 10:11 am", "tomorrow 9 am")\n'
                         '- s for seconds (e.g., 30s)\n'
                         '- m for minutes (e.g., 30m)\n'
                         '- h for hours (e.g., 1h)\n'
@@ -202,7 +269,7 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f'✅ Reminder set!\n'
             f'📅 {formatted_date}\n'
-            f'📝 Msg: {message}\n'
+            f'📝 Message: {message}\n'
             f'🆔 Reminder ID: {reminder_id}',
             reply_markup=reply_markup,
             parse_mode='HTML'
@@ -212,7 +279,7 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error setting reminder: {str(e)}")
         await update.message.reply_text(
             'Invalid time format. Please use:\n'
-            '- Natural language (e.g., "10 may", "tomorrow 9 am")\n'
+            '- Natural language (e.g., "7 may 10:11 am", "tomorrow 9 am")\n'
             '- Numbers followed by s, m, h, or d\n'
             '- Day of the week'
         )
@@ -272,24 +339,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(text="❌ Reminder not found.")
         
         elif action == 'reschedule':
-            keyboard = [
-                [
-                    InlineKeyboardButton("2 Days", callback_data=f"reschedule_time:{reminder_id}:2d"),
-                    InlineKeyboardButton("🌅 Next Morning", callback_data=f"reschedule_time:{reminder_id}:morning")
-                ],
-                [
-                    InlineKeyboardButton("🌙 Evening", callback_data=f"reschedule_time:{reminder_id}:evening"),
-                    InlineKeyboardButton("🏖️ Weekend", callback_data=f"reschedule_time:{reminder_id}:weekend")
-                ],
-                [
-                    InlineKeyboardButton("📅 Monday", callback_data=f"reschedule_time:{reminder_id}:monday")
+            if reminder_id in active_reminders:
+                keyboard = [
+                    [
+                        InlineKeyboardButton("2 Days", callback_data=f"reschedule_time:{reminder_id}:2d"),
+                        InlineKeyboardButton("🌅 Next Morning", callback_data=f"reschedule_time:{reminder_id}:morning")
+                    ],
+                    [
+                        InlineKeyboardButton("🌙 Evening", callback_data=f"reschedule_time:{reminder_id}:evening"),
+                        InlineKeyboardButton("🏖️ Weekend", callback_data=f"reschedule_time:{reminder_id}:weekend")
+                    ],
+                    [
+                        InlineKeyboardButton("📅 Monday", callback_data=f"reschedule_time:{reminder_id}:monday")
+                    ]
                 ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                text="⏰ Choose when to reschedule the reminder:",
-                reply_markup=reply_markup
-            )
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    text="⏰ Choose when to reschedule the reminder:",
+                    reply_markup=reply_markup
+                )
+            else:
+                await query.edit_message_text(text="❌ Reminder not found.")
         
         elif action == 'reschedule_time':
             if len(data) == 3:
@@ -344,9 +414,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     formatted_date = new_time.strftime("%d %b %H:%M")
                     await query.edit_message_text(
                         text=f"✅ Reminder rescheduled!\n"
-                             f"📅 {formatted_date} 🆔 : {reminder_id}",
+                             f"📅 {formatted_date}\n"
+                             f"🆔 Reminder ID: {reminder_id}",
                         parse_mode='HTML'
                     )
+                else:
+                    await query.edit_message_text(text="❌ Reminder not found.")
     
     except Exception as e:
         logger.error(f"Error in button callback: {str(e)}")
