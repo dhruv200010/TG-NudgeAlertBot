@@ -55,48 +55,64 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
     logger.info(f"User {update.effective_user.id} started the bot")
     await update.message.reply_text(
-        'Hi! I am a reminder bot. Use /remind <time> <message> to set a reminder.\n\n'
-        'Time formats:\n'
+        '👋 Hi! I am NudgeAlertBot, your smart reminder assistant!\n\n'
+        'I can help you set reminders in multiple ways:\n\n'
+        '📅 Time Formats:\n'
         '- Natural language: "7 may 10:11 am", "tomorrow 9 am"\n'
-        '- Seconds: 30s (30 seconds)\n'
-        '- Minutes: 30m (30 minutes)\n'
-        '- Hours: 1h (1 hour)\n'
-        '- Days: 1d (1 day)\n'
-        '- Specific days: mon, tue, wed, thu, fri, sat, sun\n'
+        '- Quick intervals: 30s, 30m, 1h, 2d\n'
+        '- Days of week: mon, tue, wed, thu, fri, sat, sun\n'
         '  (or full names: monday, tuesday, etc.)\n\n'
-        'Examples:\n'
+        '📝 Examples:\n'
         '/remind 30s Take a break\n'
         '/remind 1h Check email\n'
         '/remind 2d Call mom\n'
         '/remind mon Team meeting\n'
-        '/remind 7 may 10:11 am Buy groceries\n'
-        'You can also set reminders in channels/groups!'
+        '/remind 7 may 10:11 am Buy groceries\n\n'
+        '🔄 Features:\n'
+        '- Set reminders in private chats, groups, and channels\n'
+        '- Auto-reminders from channel messages\n'
+        '- Reschedule or cancel reminders\n'
+        '- List all active reminders\n'
+        '- Photo reminders with captions\n\n'
+        'Type /help for more detailed information!'
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /help is issued."""
     logger.info(f"User {update.effective_user.id} requested help")
     await update.message.reply_text(
-        'Available commands:\n'
-        '/start - Start the bot\n'
+        '🤖 NudgeAlertBot - Your Smart Reminder Assistant\n\n'
+        '📋 Available Commands:\n'
+        '/start - Get started with the bot\n'
         '/help - Show this help message\n'
-        '/remind <time> <message> - Set a reminder\n\n'
-        'Time formats:\n'
+        '/remind <time> <message> - Set a new reminder\n'
+        '/list - View all your active reminders\n'
+        '/cancel <reminder_id> - Cancel a specific reminder\n\n'
+        '⏰ Time Formats:\n'
         '- Natural language: "7 may 10:11 am", "tomorrow 9 am"\n'
-        '- Seconds: 30s (30 seconds)\n'
-        '- Minutes: 30m (30 minutes)\n'
-        '- Hours: 1h (1 hour)\n'
-        '- Days: 1d (1 day)\n'
-        '- Specific days: mon, tue, wed, thu, fri, sat, sun\n'
+        '- Quick intervals: 30s, 30m, 1h, 2d\n'
+        '- Days of week: mon, tue, wed, thu, fri, sat, sun\n'
         '  (or full names: monday, tuesday, etc.)\n\n'
-        'Examples:\n'
+        '📝 Example Commands:\n'
         '/remind 30s Take a break\n'
         '/remind 1h Check email\n'
         '/remind 2d Call mom\n'
         '/remind mon Team meeting\n'
         '/remind 7 may 10:11 am Buy groceries\n\n'
-        '/list - List all active reminders\n'
-        '/cancel <reminder_id> - Cancel a reminder'
+        '🔄 Advanced Features:\n'
+        '1. Channel Integration:\n'
+        '   - Auto-create reminders from channel messages\n'
+        '   - Send reminders to all channel admins\n'
+        '   - Support for photo messages with captions\n\n'
+        '2. Reminder Management:\n'
+        '   - Reschedule reminders with quick options\n'
+        '   - Cancel reminders anytime\n'
+        '   - View all active reminders\n\n'
+        '3. Smart Time Parsing:\n'
+        '   - Understands natural language dates\n'
+        '   - Handles relative times (tomorrow, next week)\n'
+        '   - Supports multiple time formats\n\n'
+        'Need more help? Just ask!'
     )
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
@@ -321,7 +337,11 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Message: {reminder['message']}\n\n"
         )
     
-    await update.message.reply_text(message)
+    # Add a "Cancel All" button
+    keyboard = [[InlineKeyboardButton("❌ Cancel All Reminders", callback_data="cancel_all")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(message, reply_markup=reply_markup)
 
 async def cancel_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel a reminder."""
@@ -349,6 +369,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         data = query.data.split(':')
         action = data[0]
+        
+        if action == 'cancel_all':
+            # Clear all reminders
+            active_reminders.clear()
+            # Cancel all jobs in the job queue
+            for job in context.job_queue.jobs():
+                job.schedule_removal()
+            await query.message.reply_text("✅ All reminders have been cancelled.")
+            return
+        
         reminder_id = int(data[1])
         
         logger.info(f"Button callback received - Action: {action}, Reminder ID: {reminder_id}")
