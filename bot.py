@@ -8,8 +8,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQuer
 import re
 from dateutil import parser
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from config.env
+load_dotenv('config.env', override=True)
 
 # Enable logging
 logging.basicConfig(
@@ -80,7 +80,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /help is issued."""
     logger.info(f"User {update.effective_user.id} requested help")
-    await update.message.reply_text(
+    help_message = await update.message.reply_text(
         '🤖 NudgeAlertBot - Your Smart Reminder Assistant\n\n'
         '📋 Available Commands:\n'
         '/start - Get started with the bot\n'
@@ -114,6 +114,32 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         '   - Supports multiple time formats\n\n'
         'Need more help? Just ask!'
     )
+
+    # Auto-delete in groups and channels
+    if update.effective_chat.type in ['group', 'supergroup', 'channel']:
+        try:
+            # Check if the user is an admin
+            user = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
+            if user.status in ['creator', 'administrator']:
+                logger.info(f"Admin {update.effective_user.id} used /help command in {update.effective_chat.type}")
+                bot_member = await context.bot.get_chat_member(update.effective_chat.id, context.bot.id)
+                if bot_member.can_delete_messages:
+                    async def delete_help():
+                        try:
+                            await asyncio.sleep(30)
+                            # Delete both the command message and the help message
+                            await update.message.delete()
+                            await help_message.delete()
+                            logger.info(f"Successfully deleted /help command and response in {update.effective_chat.type}")
+                        except Exception as e:
+                            logger.error(f"Error deleting /help messages: {str(e)}")
+                    asyncio.create_task(delete_help())
+                else:
+                    logger.warning(f"Bot doesn't have permission to delete messages in {update.effective_chat.type}")
+            else:
+                logger.info(f"Non-admin user {update.effective_user.id} used /help command")
+        except Exception as e:
+            logger.error(f"Error checking permissions for /help command: {str(e)}")
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     """Send the reminder message to all admins."""
@@ -304,7 +330,7 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Format the date and time in the new format
         formatted_date = reminder_time.strftime("%d %b %H:%M")
-        await update.message.reply_text(
+        confirmation_message = await update.message.reply_text(
             f'✅ Reminder set!\n'
             f'📅 {formatted_date}\n'
             f'📝 Message: {message}\n'
@@ -312,6 +338,27 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
+
+        # Schedule deletion of confirmation message after 30 seconds if in a group or channel
+        if update.effective_chat.type in ['group', 'supergroup', 'channel']:
+            try:
+                # Check if bot is admin in the group
+                bot_member = await context.bot.get_chat_member(update.effective_chat.id, context.bot.id)
+                if bot_member.can_delete_messages:
+                    async def delete_confirmation():
+                        try:
+                            await asyncio.sleep(30)  # Wait for 30 seconds
+                            await confirmation_message.delete()
+                            logger.info(f"Deleted confirmation message for reminder {reminder_id}")
+                        except Exception as e:
+                            logger.error(f"Error deleting confirmation message: {str(e)}")
+
+                    # Start the deletion task
+                    asyncio.create_task(delete_confirmation())
+                else:
+                    logger.warning("Bot doesn't have permission to delete messages in this group")
+            except Exception as e:
+                logger.error(f"Error checking bot permissions: {str(e)}")
 
     except ValueError as e:
         logger.error(f"Error setting reminder: {str(e)}")
@@ -326,22 +373,47 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List all active reminders."""
     logger.info(f"User {update.effective_user.id} requested list of reminders")
     if not active_reminders:
-        await update.message.reply_text('No active reminders.')
-        return
+        list_message = await update.message.reply_text('No active reminders.')
+    else:
+        message = "Active reminders:\n\n"
+        for reminder_id, reminder in active_reminders.items():
+            message += (
+                f"ID: {reminder_id}\n"
+                f"Time: {reminder['time'].strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Message: {reminder['message']}\n\n"
+            )
+        
+        # Add a "Cancel All" button
+        keyboard = [[InlineKeyboardButton("❌ Cancel All Reminders", callback_data="cancel_all")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        list_message = await update.message.reply_text(message, reply_markup=reply_markup)
 
-    message = "Active reminders:\n\n"
-    for reminder_id, reminder in active_reminders.items():
-        message += (
-            f"ID: {reminder_id}\n"
-            f"Time: {reminder['time'].strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"Message: {reminder['message']}\n\n"
-        )
-    
-    # Add a "Cancel All" button
-    keyboard = [[InlineKeyboardButton("❌ Cancel All Reminders", callback_data="cancel_all")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(message, reply_markup=reply_markup)
+    # Auto-delete in groups and channels
+    if update.effective_chat.type in ['group', 'supergroup', 'channel']:
+        try:
+            # Check if the user is an admin
+            user = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
+            if user.status in ['creator', 'administrator']:
+                logger.info(f"Admin {update.effective_user.id} used /list command in {update.effective_chat.type}")
+                bot_member = await context.bot.get_chat_member(update.effective_chat.id, context.bot.id)
+                if bot_member.can_delete_messages:
+                    async def delete_list():
+                        try:
+                            await asyncio.sleep(30)
+                            # Delete both the command message and the list message
+                            await update.message.delete()
+                            await list_message.delete()
+                            logger.info(f"Successfully deleted /list command and response in {update.effective_chat.type}")
+                        except Exception as e:
+                            logger.error(f"Error deleting /list messages: {str(e)}")
+                    asyncio.create_task(delete_list())
+                else:
+                    logger.warning(f"Bot doesn't have permission to delete messages in {update.effective_chat.type}")
+            else:
+                logger.info(f"Non-admin user {update.effective_user.id} used /list command")
+        except Exception as e:
+            logger.error(f"Error checking permissions for /list command: {str(e)}")
 
 async def cancel_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel a reminder."""
@@ -351,7 +423,23 @@ async def cancel_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if reminder_id in active_reminders:
             del active_reminders[reminder_id]
             logger.info(f"Reminder {reminder_id} cancelled successfully")
-            await update.message.reply_text(f'Reminder {reminder_id} has been cancelled.')
+            confirmation_message = await update.message.reply_text(f'Reminder {reminder_id} has been cancelled.')
+            
+            # Auto-delete in groups and channels
+            if update.effective_chat.type in ['group', 'supergroup', 'channel']:
+                try:
+                    bot_member = await context.bot.get_chat_member(update.effective_chat.id, context.bot.id)
+                    if bot_member.can_delete_messages:
+                        async def delete_confirmation():
+                            try:
+                                await asyncio.sleep(30)
+                                await confirmation_message.delete()
+                                logger.info(f"Deleted cancellation confirmation message for reminder {reminder_id}")
+                            except Exception as e:
+                                logger.error(f"Error deleting cancellation confirmation message: {str(e)}")
+                        asyncio.create_task(delete_confirmation())
+                except Exception as e:
+                    logger.error(f"Error checking bot permissions: {str(e)}")
         else:
             logger.warning(f"User {update.effective_user.id} tried to cancel non-existent reminder {reminder_id}")
             await update.message.reply_text('Reminder not found.')
@@ -376,7 +464,32 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Cancel all jobs in the job queue
             for job in context.job_queue.jobs():
                 job.schedule_removal()
-            await query.message.reply_text("✅ All reminders have been cancelled.")
+            logger.info("All reminders have been cancelled")
+            confirmation_message = await query.message.reply_text("✅ All reminders have been cancelled.")
+            
+            # Auto-delete in groups and channels
+            if query.message.chat.type in ['group', 'supergroup', 'channel']:
+                try:
+                    # Check if the user is an admin
+                    user = await context.bot.get_chat_member(query.message.chat.id, query.from_user.id)
+                    if user.status in ['creator', 'administrator']:
+                        logger.info(f"Admin {query.from_user.id} cancelled all reminders in {query.message.chat.type}")
+                        bot_member = await context.bot.get_chat_member(query.message.chat.id, context.bot.id)
+                        if bot_member.can_delete_messages:
+                            async def delete_confirmation():
+                                try:
+                                    await asyncio.sleep(30)
+                                    # Delete both the original message and the confirmation
+                                    await query.message.delete()
+                                    await confirmation_message.delete()
+                                    logger.info(f"Successfully deleted cancel all messages in {query.message.chat.type}")
+                                except Exception as e:
+                                    logger.error(f"Error deleting cancel all messages: {str(e)}")
+                            asyncio.create_task(delete_confirmation())
+                        else:
+                            logger.warning(f"Bot doesn't have permission to delete messages in {query.message.chat.type}")
+                except Exception as e:
+                    logger.error(f"Error checking permissions for cancel all: {str(e)}")
             return
         
         reminder_id = int(data[1])
@@ -387,7 +500,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if reminder_id in active_reminders:
                 del active_reminders[reminder_id]
                 # Send a new message instead of editing
-                await query.message.reply_text(text=f"❌ Reminder {reminder_id} has been cancelled.")
+                confirmation_message = await query.message.reply_text(text=f"❌ Reminder {reminder_id} has been cancelled.")
+                
+                # Auto-delete in groups and channels
+                if query.message.chat.type in ['group', 'supergroup', 'channel']:
+                    try:
+                        bot_member = await context.bot.get_chat_member(query.message.chat.id, context.bot.id)
+                        if bot_member.can_delete_messages:
+                            async def delete_confirmation():
+                                try:
+                                    await asyncio.sleep(30)
+                                    await confirmation_message.delete()
+                                    logger.info(f"Deleted cancellation confirmation message for reminder {reminder_id}")
+                                except Exception as e:
+                                    logger.error(f"Error deleting cancellation confirmation message: {str(e)}")
+                            asyncio.create_task(delete_confirmation())
+                    except Exception as e:
+                        logger.error(f"Error checking bot permissions: {str(e)}")
             else:
                 await query.message.reply_text(text="❌ Reminder not found.")
         
@@ -408,10 +537,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 # Send a new message instead of editing
-                await query.message.reply_text(
+                confirmation_message = await query.message.reply_text(
                     text="⏰ Choose when to reschedule the reminder:",
                     reply_markup=reply_markup
                 )
+                
+                # Auto-delete in groups and channels
+                if query.message.chat.type in ['group', 'supergroup', 'channel']:
+                    try:
+                        bot_member = await context.bot.get_chat_member(query.message.chat.id, context.bot.id)
+                        if bot_member.can_delete_messages:
+                            async def delete_confirmation():
+                                try:
+                                    await asyncio.sleep(30)
+                                    await confirmation_message.delete()
+                                    logger.info(f"Deleted reschedule options message for reminder {reminder_id}")
+                                except Exception as e:
+                                    logger.error(f"Error deleting reschedule options message: {str(e)}")
+                            asyncio.create_task(delete_confirmation())
+                    except Exception as e:
+                        logger.error(f"Error checking bot permissions: {str(e)}")
             else:
                 await query.message.reply_text(text="❌ Reminder not found.")
         
@@ -467,12 +612,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     # Format the date and time in the new format
                     formatted_date = new_time.strftime("%d %b %H:%M")
                     # Send a new message instead of editing
-                    await query.message.reply_text(
+                    confirmation_message = await query.message.reply_text(
                         text=f"✅ Reminder rescheduled!\n"
                              f"📅 {formatted_date}\n"
                              f"🆔 Reminder ID: {reminder_id}",
                         parse_mode='HTML'
                     )
+                    
+                    # Auto-delete in groups and channels
+                    if query.message.chat.type in ['group', 'supergroup', 'channel']:
+                        try:
+                            bot_member = await context.bot.get_chat_member(query.message.chat.id, context.bot.id)
+                            if bot_member.can_delete_messages:
+                                async def delete_confirmation():
+                                    try:
+                                        await asyncio.sleep(30)
+                                        await confirmation_message.delete()
+                                        logger.info(f"Deleted reschedule confirmation message for reminder {reminder_id}")
+                                    except Exception as e:
+                                        logger.error(f"Error deleting reschedule confirmation message: {str(e)}")
+                                asyncio.create_task(delete_confirmation())
+                        except Exception as e:
+                            logger.error(f"Error checking bot permissions: {str(e)}")
                 else:
                     await query.message.reply_text(text="❌ Reminder not found.")
     
@@ -737,8 +898,12 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
 
 def main():
     """Start the bot."""
-    # Create the Application
-    TOKEN = "8049839564:AAGw-mLyq5ObsoxecQQGGiHpwfPpz8C2KsE"
+    # Get token from environment variable
+    TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    if not TOKEN:
+        logger.error("No TELEGRAM_BOT_TOKEN found in environment variables!")
+        return
+    
     logger.info("Starting bot...")
     
     # Create application with job queue
