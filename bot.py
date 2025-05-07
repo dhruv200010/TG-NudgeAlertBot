@@ -517,10 +517,51 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
         logger.info("No message or channel post found in update")
         return
 
-    # Skip if message is a command
-    if message.text and message.text.startswith('/'):
-        logger.info("Skipping command message")
+    # Get the message text or caption
+    message_text = None
+    
+    # Debug logging for message type
+    if message.photo:
+        logger.info("Message contains photo")
+        if message.caption:
+            logger.info(f"Photo has caption: {message.caption}")
+            message_text = message.caption
+        else:
+            logger.info("Photo has no caption")
+            message_text = "Photo message"
+    elif message.text:
+        logger.info(f"Message has text: {message.text}")
+        message_text = message.text
+    elif message.caption:
+        logger.info(f"Message has caption: {message.caption}")
+        message_text = message.caption
+    else:
+        # Handle other message types
+        if message.video:
+            message_text = "Video message"
+        elif message.document:
+            message_text = f"Document: {message.document.file_name}"
+        elif message.audio:
+            message_text = "Audio message"
+        elif message.voice:
+            message_text = "Voice message"
+        else:
+            message_text = "Media message"
+
+    # Skip if no message text or caption
+    if not message_text:
+        logger.info("No message text or caption found")
         return
+
+    # Check if message contains /remind command
+    if message_text.startswith('/remind'):
+        # Extract the reminder text after /remind
+        reminder_text = message_text[7:].strip()
+        if not reminder_text:
+            logger.info("No reminder text after /remind command")
+            return
+        message_text = reminder_text
+        logger.info(f"Extracted reminder text: {message_text}")
 
     # Skip if message is from a private chat
     if update.effective_chat.type == 'private':
@@ -528,33 +569,57 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     try:
-        # Get the message text or caption
-        message_text = None
-        if message.text:
-            message_text = message.text
-        elif message.caption:
-            message_text = message.caption
-        else:
-            # Handle different message types
-            if message.photo:
-                message_text = "Photo message"
-            elif message.video:
-                message_text = "Video message"
-            elif message.document:
-                message_text = f"Document: {message.document.file_name}"
-            elif message.audio:
-                message_text = "Audio message"
-            elif message.voice:
-                message_text = "Voice message"
-            else:
-                message_text = "Media message"
+        logger.info(f"Processing message for reminder: {message_text}")
         
-        logger.info(f"Processing message: {message_text}")
-        
-        # Calculate time for 2 days from now at 10 AM
-        now = datetime.now()
-        reminder_time = now + timedelta(days=2)
-        reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
+        # Try to parse the time from the message
+        try:
+            # First try to parse with explicit time
+            reminder_time = parser.parse(message_text, fuzzy=True)
+            logger.info(f"Successfully parsed time: {reminder_time}")
+            
+            # Extract the actual reminder message by removing the time part
+            # This is a simple approach - you might want to make it more sophisticated
+            time_patterns = [
+                r'\b(today|tomorrow|next week|next month)\b',
+                r'\b\d{1,2}:\d{2}\s*(?:am|pm)\b',
+                r'\b\d{1,2}\s*(?:am|pm)\b',
+                r'\b\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b',
+                r'\b\d{1,2}\s*(?:january|february|march|april|may|june|july|august|september|october|november|december)\b'
+            ]
+            
+            reminder_message = message_text
+            for pattern in time_patterns:
+                reminder_message = re.sub(pattern, '', reminder_message, flags=re.IGNORECASE)
+            
+            # Clean up the message
+            reminder_message = ' '.join(reminder_message.split())
+            logger.info(f"Extracted reminder message: {reminder_message}")
+            
+            # Check if the parsed time has a time component
+            if reminder_time.hour == 0 and reminder_time.minute == 0 and reminder_time.second == 0:
+                # No time component was provided, set to 10:00 AM
+                reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
+                logger.info(f"Set default time to 10:00 AM: {reminder_time}")
+        except Exception as e:
+            logger.error(f"Error parsing time: {str(e)}")
+            # If parsing fails, try to parse just the date and use 10:00 AM
+            try:
+                reminder_time = parser.parse(f"{message_text} 10:00 am", fuzzy=True)
+                logger.info(f"Successfully parsed time with default 10:00 AM: {reminder_time}")
+                reminder_message = message_text
+            except Exception as e:
+                logger.error(f"Error parsing time with default: {str(e)}")
+                # If still fails, use default of 2 days from now at 10 AM
+                now = datetime.now()
+                reminder_time = now + timedelta(days=2)
+                reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
+                logger.info(f"Using default time (2 days from now at 10 AM): {reminder_time}")
+                reminder_message = message_text
+
+        # If the parsed time is in the past, assume it's for next year
+        if reminder_time < datetime.now():
+            reminder_time = reminder_time.replace(year=reminder_time.year + 1)
+            logger.info(f"Adjusted time to next year: {reminder_time}")
 
         # Generate reminder ID
         reminder_id = len(active_reminders) + 1
@@ -562,7 +627,7 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
         # Store reminder info
         active_reminders[reminder_id] = {
             'chat_id': update.effective_chat.id,
-            'message': message_text,
+            'message': reminder_message,
             'time': reminder_time
         }
         logger.info(f"Auto-stored reminder {reminder_id} for time {reminder_time}")
@@ -570,7 +635,7 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
         # Schedule the reminder
         context.application.job_queue.run_once(
             send_reminder,
-            reminder_time - now,
+            reminder_time - datetime.now(),
             data={'reminder_id': reminder_id}
         )
         logger.info(f"Auto-scheduled reminder {reminder_id} to run at {reminder_time}")
@@ -589,7 +654,7 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
         await message.reply_text(
             f'⏰ Auto-reminder set!\n'
             f'📅 {formatted_date}\n'
-            f'📝 Msg: {message_text}\n'
+            f'📝 Msg: {reminder_message}\n'
             f'🆔 Reminder ID: {reminder_id}',
             reply_markup=reply_markup,
             parse_mode='HTML'
