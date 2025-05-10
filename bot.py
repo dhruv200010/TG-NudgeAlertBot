@@ -7,6 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, ConversationHandler, MessageHandler, filters
 import re
 from dateutil import parser
+import pytz
 
 # Load environment variables from config.env
 load_dotenv('config.env', override=True)
@@ -17,6 +18,19 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Set Central Time zone
+CENTRAL_TZ = pytz.timezone('America/Chicago')
+
+def convert_to_central(dt):
+    """Convert datetime to Central Time."""
+    if dt.tzinfo is None:
+        dt = pytz.UTC.localize(dt)
+    return dt.astimezone(CENTRAL_TZ)
+
+def get_central_now():
+    """Get current time in Central Time."""
+    return datetime.now(CENTRAL_TZ)
 
 # Debug: Print the token (first few characters for security)
 token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -252,51 +266,24 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reminder_time = parser.parse(time_str, fuzzy=True)
             logger.info(f"Successfully parsed time: {reminder_time}")
             
+            # Convert to Central Time
+            reminder_time = convert_to_central(reminder_time)
+            
             # Check if the parsed time has a time component
             if reminder_time.hour == 0 and reminder_time.minute == 0 and reminder_time.second == 0:
-                # No time component was provided, set to 10:00 AM
+                # No time component was provided, set to 10:00 AM Central
                 reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
-                logger.info(f"Set default time to 10:00 AM: {reminder_time}")
+                logger.info(f"Set default time to 10:00 AM Central: {reminder_time}")
         except Exception as e:
             logger.error(f"Error parsing time: {str(e)}")
-            # If parsing fails, try to parse just the date and use 10:00 AM
-            try:
-                reminder_time = parser.parse(f"{time_str} 10:00 am", fuzzy=True)
-                logger.info(f"Successfully parsed time with default 10:00 AM: {reminder_time}")
-            except Exception as e:
-                logger.error(f"Error parsing time with default: {str(e)}")
-                # If still fails, try the old format (30m, 1h, etc.)
-                if time_str.endswith('s'):
-                    seconds = int(time_str[:-1])
-                    reminder_time = datetime.now() + timedelta(seconds=seconds)
-                elif time_str.endswith('m'):
-                    minutes = int(time_str[:-1])
-                    reminder_time = datetime.now() + timedelta(minutes=minutes)
-                elif time_str.endswith('h'):
-                    hours = int(time_str[:-1])
-                    reminder_time = datetime.now() + timedelta(hours=hours)
-                elif time_str.endswith('d'):
-                    days = int(time_str[:-1])
-                    reminder_time = datetime.now() + timedelta(days=days)
-                elif time_str in DAYS_OF_WEEK:
-                    target_day = DAYS_OF_WEEK[time_str]
-                    reminder_time = get_next_day_of_week(target_day)
-                    reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
-                else:
-                    logger.warning(f"User {update.effective_user.id} provided invalid time format: {time_str}")
-                    await update.message.reply_text(
-                        '❌ Invalid time format. Use:\n'
-                        '- Natural language (e.g., "7 may 10:11 am", "tomorrow 9 am")\n'
-                        '- s for seconds (e.g., 30s)\n'
-                        '- m for minutes (e.g., 30m)\n'
-                        '- h for hours (e.g., 1h)\n'
-                        '- d for days (e.g., 1d)\n'
-                        '- Day of week (e.g., thu for Thursday)'
-                    )
-                    return
+            # If parsing fails, set default to 2 days from now at 10 AM Central
+            now = get_central_now()
+            reminder_time = now + timedelta(days=2)
+            reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
+            logger.info(f"Using default time (2 days from now at 10 AM Central): {reminder_time}")
 
         # If the parsed time is in the past, assume it's for next year
-        if reminder_time < datetime.now():
+        if reminder_time < get_central_now():
             reminder_time = reminder_time.replace(year=reminder_time.year + 1)
             logger.info(f"Adjusted time to next year: {reminder_time}")
 
@@ -314,7 +301,7 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Schedule the reminder
         context.application.job_queue.run_once(
             send_reminder,
-            reminder_time - datetime.now(),
+            reminder_time - get_central_now(),
             data={'reminder_id': reminder_id}
         )
         logger.info(f"Scheduled reminder {reminder_id} to run at {reminder_time}")
@@ -328,8 +315,8 @@ async def set_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Format the date and time in the new format
-        formatted_date = reminder_time.strftime("%d %b %H:%M")
+        # Format the date and time in Central Time
+        formatted_date = reminder_time.strftime("%d %b %H:%M %Z")
         confirmation_message = await update.message.reply_text(
             f'✅ Reminder set!\n'
             f'📅 {formatted_date}\n'
@@ -532,7 +519,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         InlineKeyboardButton("🏖️ Weekend", callback_data=f"reschedule_time:{reminder_id}:weekend")
                     ],
                     [
-                        InlineKeyboardButton("📅 Monday", callback_data=f"reschedule_time:{reminder_id}:monday")
+                        InlineKeyboardButton("📅 Monday", callback_data=f"reschedule_time:{reminder_id}:monday"),
+                        InlineKeyboardButton("⚡ Now", callback_data=f"reschedule_time:{reminder_id}:now")
                     ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -596,6 +584,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             days_until_monday = 7
                         new_time = now + timedelta(days=days_until_monday)
                         new_time = new_time.replace(hour=10, minute=0, second=0, microsecond=0)
+                    elif time_option == 'now':
+                        # Set to 5 seconds from now for testing
+                        new_time = now + timedelta(seconds=5)
                     else:
                         return
                     
@@ -797,6 +788,9 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
             reminder_time = parser.parse(message_text, fuzzy=True)
             logger.info(f"Successfully parsed time: {reminder_time}")
             
+            # Convert to Central Time
+            reminder_time = convert_to_central(reminder_time)
+            
             # Extract the actual reminder message by removing the time part
             time_patterns = [
                 r'\b(today|tomorrow|next week|next month)\b',
@@ -816,27 +810,20 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
             
             # Check if the parsed time has a time component
             if reminder_time.hour == 0 and reminder_time.minute == 0 and reminder_time.second == 0:
-                # No time component was provided, set to 10:00 AM
+                # No time component was provided, set to 10:00 AM Central
                 reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
-                logger.info(f"Set default time to 10:00 AM: {reminder_time}")
+                logger.info(f"Set default time to 10:00 AM Central: {reminder_time}")
         except Exception as e:
             logger.error(f"Error parsing time: {str(e)}")
-            # If parsing fails, try to parse just the date and use 10:00 AM
-            try:
-                reminder_time = parser.parse(f"{message_text} 10:00 am", fuzzy=True)
-                logger.info(f"Successfully parsed time with default 10:00 AM: {reminder_time}")
-                reminder_message = message_text
-            except Exception as e:
-                logger.error(f"Error parsing time with default: {str(e)}")
-                # If still fails, use default of 2 days from now at 10 AM
-                now = datetime.now()
-                reminder_time = now + timedelta(days=2)
-                reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
-                logger.info(f"Using default time (2 days from now at 10 AM): {reminder_time}")
-                reminder_message = message_text
+            # If parsing fails, set default to 2 days from now at 10 AM Central
+            now = get_central_now()
+            reminder_time = now + timedelta(days=2)
+            reminder_time = reminder_time.replace(hour=10, minute=0, second=0, microsecond=0)
+            logger.info(f"Using default time (2 days from now at 10 AM Central): {reminder_time}")
+            reminder_message = message_text
 
         # If the parsed time is in the past, assume it's for next year
-        if reminder_time < datetime.now():
+        if reminder_time < get_central_now():
             reminder_time = reminder_time.replace(year=reminder_time.year + 1)
             logger.info(f"Adjusted time to next year: {reminder_time}")
 
@@ -855,7 +842,7 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
         # Schedule the reminder
         context.application.job_queue.run_once(
             send_reminder,
-            reminder_time - datetime.now(),
+            reminder_time - get_central_now(),
             data={'reminder_id': reminder_id}
         )
         logger.info(f"Auto-scheduled reminder {reminder_id} to run at {reminder_time}")
@@ -869,8 +856,8 @@ async def handle_channel_message(update: Update, context: ContextTypes.DEFAULT_T
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Format the date and time
-        formatted_date = reminder_time.strftime("%d %b %H:%M")
+        # Format the date and time in Central Time
+        formatted_date = reminder_time.strftime("%d %b %H:%M %Z")
         confirmation_message = await message.reply_text(
             f'⏰ Auto-reminder set!\n'
             f'📅 {formatted_date}\n'
@@ -906,11 +893,15 @@ def main():
     
     logger.info("Starting bot...")
     
-    # Create application with job queue
+    # Create application with job queue and increased timeout
     application = (
         Application.builder()
         .token(TOKEN)
         .concurrent_updates(True)  # Enable concurrent updates
+        .connect_timeout(30.0)     # Increase connection timeout to 30 seconds
+        .read_timeout(30.0)        # Increase read timeout to 30 seconds
+        .write_timeout(30.0)       # Increase write timeout to 30 seconds
+        .pool_timeout(30.0)        # Increase pool timeout to 30 seconds
         .build()
     )
     
@@ -928,7 +919,7 @@ def main():
         block=False
     ))
     
-    # Add conversation handler for custom time input
+    # Add conversation handler for custom time input with per_message=True
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_callback)],
         states={
@@ -937,7 +928,7 @@ def main():
             ],
         },
         fallbacks=[],
-        per_message=False,
+        per_message=True,  # Changed to True to track each message
         name="custom_time_handler",
         persistent=False,
         allow_reentry=True
